@@ -1,0 +1,173 @@
+% Based on the supplied ReportTemplate/template.tex; adapted to two columns.
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[a4paper,margin=25mm,columnsep=7mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\usepackage[british]{babel}
+\usepackage{amsmath,amssymb,graphicx,booktabs,array,tabularx}
+\usepackage[square,comma,numbers,sort&compress]{natbib}
+\usepackage{microtype,fancyhdr,xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{flushend}
+\usepackage{titlesec}
+\titleformat{\section}{\large\bfseries\raggedright}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries\raggedright}{\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}{\normalsize\itshape\raggedright}{\thesubsubsection}{0.5em}{}
+\graphicspath{{figures/}}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+\setlength{\headheight}{14pt}
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{9pt plus 2pt minus 2pt}
+\setlength{\emergencystretch}{1.5em}
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.08}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{3}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\newcommand{\skewm}[1]{[#1]_{\times}}
+\newcommand{\R}{\mathbf R}
+\newcommand{\ttt}{\mathbf t}
+\newcommand{\ff}{\mathbf f}
+\newcommand{\pp}{\mathbf p}
+\newcommand{\avec}{\mathbf a}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{Lab 6 Individual Assignment\\Five Point Geometry and a Minimal Translation Solver}
+\author{Ruihang Liu}
+\date{}
+\hypersetup{pdftitle={Lab 6 Individual Assignment: D1 and D2},pdfauthor={Ruihang Liu}}
+\begin{document}
+\maketitle
+
+\section*{Notation and Coordinate Convention}
+Let frame 1 be the preceding camera view and frame 2 the current view. The relative pose maps a point from frame 2 into frame 1:
+\begin{equation}
+ \pp_1=\R_{12}\pp_2+\ttt_{12},\qquad
+ \R_{12}\in\mathrm{SO}(3),\quad \ttt_{12}\in\mathbb R^3.
+ \label{eq:map}
+\end{equation}
+For corresponding unit bearing vectors $\ff_1$ and $\ff_2$, positive depths $\lambda_1$ and $\lambda_2$ satisfy $\lambda_1\ff_1=\lambda_2\R_{12}\ff_2+\ttt_{12}$. The three vectors are coplanar, giving
+\begin{equation}
+ \ff_1^\top E\ff_2=0,\qquad E=\skewm{\ttt_{12}}\R_{12}.
+ \label{eq:essential}
+\end{equation}
+Here $\skewm{\ttt}\mathbf v=\ttt\times\mathbf v$. This is the OpenGV convention used by the implementation. Unless otherwise specified, $\R$ and $\ttt$ below denote $\R_{12}$ and $\ttt_{12}$.
+
+\section{D1 Nist\'er's Five Point Algorithm}
+\subsection{Computational steps}
+Stacking five epipolar equations gives $A\mathbf e=0$, with $A\in\mathbb R^{5\times9}$ and $\mathbf e$ containing the entries of $E$ in a fixed order. For rank-five $A$, the four-dimensional nullspace gives
+\begin{equation}
+ E=xE_1+yE_2+zE_3+E_4.
+ \label{eq:nullspace}
+\end{equation}
+This fixes scale in an affine chart where the coefficient of $E_4$ is nonzero; another chart is needed if that coefficient vanishes. The essential constraint is
+\begin{equation}
+ EE^\top E-\tfrac12\operatorname{tr}(EE^\top)E=0.
+ \label{eq:cubic}
+\end{equation}
+Nist\'er's 2003 construction \cite{nister2003efficient} expands these nine cubic equations into a $9\times20$ coefficient matrix. Gauss--Jordan elimination and two $4\times4$ polynomial determinants yield a tenth-degree polynomial in $z$. Real roots are isolated and refined, then back-substituted to recover $x$, $y$, and up to ten candidate essential matrices.
+
+For each candidate, SVD gives $E\sim U\operatorname{diag}(1,1,0)V^\top$. After choosing proper orientations for $U$ and $V$, the two rotation choices are $UDV^\top$ and $UD^\top V^\top$, where
+\begin{equation}
+ D=\begin{bmatrix}0&1&0\\-1&0&0\\0&0&1\end{bmatrix},\qquad
+ \ttt\propto\pm U_{:,3}.
+\end{equation}
+Triangulation and positive-depth tests select physically admissible poses. Additional correspondences score the remaining hypotheses. Translation magnitude remains unobservable.
+
+\subsection{Degeneracies and ambiguities}
+With pure rotation, $\ff_1\parallel\R\ff_2$: every translation direction satisfies~\eqref{eq:essential}, so translation is unobservable. Very distant points or a very small baseline approach this condition numerically. Repeated correspondences or a collinear image configuration can reduce the rank of $A$, invalidating the four-vector parameterisation. A finite planar scene is not automatically a failure of the calibrated solver: it can retain a twofold ambiguity, which two-view cheirality does not always resolve \cite{nister2003efficient}. Thus numerical ill-conditioning, multiple finite solutions, and complete loss of observability should be distinguished.
+
+\subsection{RANSAC iteration count}
+Let $w=1-\epsilon$ be the inlier probability and $s$ the sample size. Under independent sampling, the probability of an all-inlier sample is $q=w^s$. If $K$ counts trials up to and including the first success, then
+\begin{equation}
+ \Pr(K=k)=(1-q)^{k-1}q,\qquad
+ \mathbb E[K]=\frac1{w^s}.
+ \label{eq:expectation}
+\end{equation}
+The probability of at least one success in $N$ trials is $1-(1-w^s)^N$. Requiring confidence $p$ therefore gives
+\begin{equation}
+ N=\left\lceil\frac{\log(1-p)}{\log(1-w^s)}\right\rceil.
+ \label{eq:confidence}
+\end{equation}
+For the ideal five-point sample and an illustrative 50\% outlier rate, $\mathbb E[K]=32$; $p=0.99$ requires 146 trials. These are different quantities: the expectation does not provide a 99\% success guarantee. The general expressions make the assumed inlier rate and confidence explicit. For finite sampling without replacement within a trial, the exact success probability is $\binom{M_{\rm in}}s/\binom Ms$, where $M$ is the number of matches.
+
+\begin{table}[t]
+\centering\small
+\caption{Ideal minimal-sample RANSAC counts at 50\% outliers. Confidence counts use $p=0.99$.}
+\label{tab:iterations}
+\begin{tabular}{lrrr}\toprule
+Solver & $s$ & $\mathbb E[K]$ & $N$\\\midrule
+Known-rotation two-point & 2 & 4 & 17\\
+Arun three-point & 3 & 8 & 35\\
+Nist\'er five-point & 5 & 32 & 146\\
+Eight-point & 8 & 256 & 1177\\\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:iterations} compares theoretical minimal samples. In OpenGV's central-pose wrapper, five-point estimation samples eight correspondences and eight-point estimation samples nine, using extra points to choose a pose hypothesis \cite{opengvsource}. Requiring all sampled points to be inliers gives expected counts of 256 and 512 and confidence counts of 1177 and 2356, respectively. These conservative sample-purity calculations do not exactly predict successful pose selection when some of the additional points are outliers.
+
+\section{D2 A Minimal Solver with Known Rotation}
+\subsection{Derivation and sign selection}
+Known rotation removes three of the five observable motion degrees of freedom. The remaining translation direction lies on the unit sphere and has two degrees of freedom. Rewriting~\eqref{eq:essential} as a scalar triple product gives
+\begin{equation}
+ \ttt^\top\avec_i=0,\qquad
+ \avec_i=(\R\ff_{2,i})\times\ff_{1,i}.
+ \label{eq:twopoint}
+\end{equation}
+One correspondence constrains translation to a plane. Two independent plane normals determine its direction up to sign:
+\begin{equation}
+ \widehat{\ttt}=\pm\frac{\avec_i\times\avec_j}{\|\avec_i\times\avec_j\|_2}.
+ \label{eq:cross}
+\end{equation}
+The minimum is therefore two correspondences, provided the normals are nonzero and nonparallel. If the points share an epipolar plane, the two constraints are dependent. Pure rotation also makes both normals vanish.
+
+The sign is selected by solving the $3\times2$ least-squares depth system
+\begin{equation}
+ [\,\ff_{1,i}\quad-\R\ff_{2,i}\,]
+ \begin{bmatrix}\lambda_{1,i}\\\lambda_{2,i}\end{bmatrix}
+ =\widehat{\ttt}.
+ \label{eq:depthsign}
+\end{equation}
+A valid sign places the triangulated point in front of both cameras. In noisy data, cheirality should be checked over several supporting points rather than inferred from a single unreliable match.
+
+For more than two inliers, define $B\in\mathbb R^{m\times3}$ with rows $B_{i,:}=\avec_i^\top/\|\avec_i\|_2$. The smallest right singular vector minimises $\|B\ttt\|_2$ subject to $\|\ttt\|_2=1$. Row normalisation gives equal weight to each epipolar plane. The sign is fixed by cheirality while the supplied rotation stays fixed.
+
+\subsection{RANSAC procedure}
+For a unit translation direction, the residual
+\begin{equation}
+ r_i=\frac{|\avec_i^\top\widehat{\ttt}|}{\|\avec_i\|_2}
+ \label{eq:residual}
+\end{equation}
+is the sine of the angle between translation and the corresponding epipolar plane. Algorithm~1 uses this residual for a concrete theoretical RANSAC design \cite{fischler1981random}. Its threshold is dimensionless.
+
+\begin{figure}[t]
+\small
+\hrule\vspace{4pt}
+\textbf{Algorithm 1: Translation RANSAC with known rotation}\par
+\textit{Input:} bearing correspondences, $\R$, threshold $\tau$, confidence $p$, limit $K_{\max}$, tolerance $\delta$.\par
+\begin{enumerate}\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}\setlength{\topsep}{3pt}
+\item Compute $\avec_i$ using~\eqref{eq:twopoint}; discard $\|\avec_i\|_2\leq\delta$. If fewer than two remain, return failure. Set $K=K_{\max}$ and best set $\mathcal I^\star=\emptyset$.
+\item For $k=1,\ldots,K_{\max}$, stop when $k>K$. Draw two distinct indices. If their normalised normals have cross-product norm below $\delta$, skip the sample.
+\item Obtain both signs from~\eqref{eq:cross}. Triangulate and score all retained correspondences using $r_i<\tau$ and positive depths. Keep the sign and consensus set $\mathcal I$ with the larger support.
+\item If $|\mathcal I|>|\mathcal I^\star|$, store the model and set $\mathcal I^\star=\mathcal I$. Let $\widehat w=|\mathcal I|/M$, using the retained match count $M$. If $\widehat w=1$, stop. For $0<\widehat w<1$, set $K=\min\{K_{\max},\lceil\log(1-p)/\log(1-\widehat w^2)\rceil\}$.
+\item If fewer than two independent inliers were found, return failure. Otherwise refit with the smallest right singular vector of $B$, fix its sign by cheirality, and recompute the consensus. Retain the previous model if refitting reduces support. Return $(\R,\widehat{\ttt})$ and its consensus.
+\end{enumerate}
+\vspace{2pt}\hrule
+\end{figure}
+
+
+
+
+\renewcommand{\bibsection}{\section*{References}}
+\renewcommand{\bibfont}{\small}
+\interlinepenalty=10000
+\setlength{\bibsep}{2pt}
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+\end{document}
